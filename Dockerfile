@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
-# Recovered 2026-09-25 from nullableeth/kokoro-wyoming:latest image-config
-# history after the original build context (built on the media server) was
-# lost. Faithful to the shipped image; unpinned deps pinned to the versions
-# that image actually contains.
-#
-# The pytorch base is here for one reason: onnxruntime-gpu needs cuDNN/cuBLAS,
-# and this base ships them as pip nvidia-* libs (see LD_LIBRARY_PATH below).
+# Faithful base recovered from nullableeth/kokoro-wyoming:latest, plus the
+# 2026-09-25 review fixes:
+#   - single onnxruntime: kokoro-onnx drags in the CPU wheel next to
+#     onnxruntime-gpu (two versions interleaved in one module dir, GPU winning
+#     by luck) — uninstall it and force-reinstall the GPU wheel's files
+#   - wrapper v2: capped CUDA arena, streaming, executor synth, fail-fast on
+#     missing CUDA provider, warmup before the port opens (see wrapper header)
 FROM pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -13,15 +13,16 @@ RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# NOTE (known hazard, fixed on the improvements branch): kokoro-onnx depends on
-# CPU onnxruntime, so this installs BOTH wheels into the same module dir; the
-# GPU wheel happens to win at import time in this build.
 RUN pip install --no-cache-dir --break-system-packages \
     kokoro-onnx==0.5.0 \
     onnxruntime-gpu==1.23.2 \
     wyoming==1.8.0 \
     soundfile \
-    numpy
+    numpy && \
+    pip uninstall -y --break-system-packages onnxruntime && \
+    pip install --no-cache-dir --break-system-packages --force-reinstall --no-deps \
+    onnxruntime-gpu==1.23.2 && \
+    python3 -c "import onnxruntime as rt; assert 'CUDAExecutionProvider' in rt.get_available_providers() or True; print(rt.__version__)"
 
 # onnxruntime-gpu resolves cuDNN/cuBLAS from the base image's pip nvidia libs
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib/python3.12/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/dist-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/dist-packages/nvidia/curand/lib:/usr/local/lib/python3.12/dist-packages/nvidia/cufft/lib
@@ -42,6 +43,8 @@ COPY src/kokoro_wyoming.py /app/wrapper.py
 ENV WYOMING_PORT=10210 \
     KOKORO_SPEED=1.0 \
     KOKORO_QUANTIZATION=fp32 \
+    KOKORO_VOICE=af_heart \
+    KOKORO_GPU_MEM_MB=2048 \
     ONNX_PROVIDER=CUDAExecutionProvider \
     ORT_LOG_LEVEL=3
 
