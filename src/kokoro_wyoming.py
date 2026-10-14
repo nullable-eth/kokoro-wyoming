@@ -59,7 +59,8 @@ class KokoroEventHandler(AsyncEventHandler):
         self.voices = voices
         self._stream_text = ""
         self._stream_voice = None
-        self._stream_started = False
+        self._stream_started = False  # audio-start already sent for this stream
+        self._stream_open = False  # between synthesize-start and synthesize-stop
 
     def _pick_voice(self, synth_voice) -> str:
         name = synth_voice.name if synth_voice else KOKORO_VOICE
@@ -93,8 +94,14 @@ class KokoroEventHandler(AsyncEventHandler):
                 return True
 
             if Synthesize.is_type(event.type):
-                if self._stream_started:
-                    return True  # streaming already handled this utterance
+                # A streaming client (HA) sends start, chunks, the full text as
+                # a plain synthesize for non-streaming servers, then stop. The
+                # chunks already carry that text, so skip it while a stream is
+                # open. Keying this on audio having started was not enough: a
+                # reply with no sentence end ("3:39 PM") had produced no audio
+                # yet, so it was spoken here and again at synthesize-stop.
+                if self._stream_open:
+                    return True
                 synthesize = Synthesize.from_event(event)
                 voice = self._pick_voice(synthesize.voice)
                 _LOGGER.info("Synthesize (%s): %r", voice, synthesize.text)
@@ -107,6 +114,7 @@ class KokoroEventHandler(AsyncEventHandler):
                 self._stream_text = ""
                 self._stream_voice = self._pick_voice(start.voice)
                 self._stream_started = False
+                self._stream_open = True
                 return True
 
             if SynthesizeChunk.is_type(event.type):
@@ -131,6 +139,9 @@ class KokoroEventHandler(AsyncEventHandler):
                     self._stream_started = True
                 if self._stream_started:
                     await self.write_event(AudioStop().event())
+                self._stream_open = False
+                self._stream_started = False
+                self._stream_text = ""
                 await self.write_event(SynthesizeStopped().event())
                 return True
 
