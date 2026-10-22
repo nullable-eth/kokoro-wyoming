@@ -7,6 +7,11 @@
 #   - wrapper v2: capped CUDA arena, streaming, executor synth, fail-fast on
 #     missing CUDA provider, warmup before the port opens (see wrapper header)
 FROM pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime
+# eMudhra CA compromise (20 Oct 26): eight eMudhra intermediate keys are
+# derivable from their certificates. Take the distro's fixed ca-certificates
+# even when the base image predates it.
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
@@ -49,4 +54,8 @@ ENV WYOMING_PORT=10210 \
     ORT_LOG_LEVEL=3
 
 EXPOSE 10210
+# certifi >= 2026.10.19 drops the compromised roots; requests/httpx use it,
+# not the OS store.
+RUN pip install --no-cache-dir --break-system-packages -U "certifi>=2026.10.19"
+
 ENTRYPOINT ["python3", "/app/wrapper.py"]
